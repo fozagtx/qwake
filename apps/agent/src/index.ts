@@ -76,7 +76,6 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   configuredProviders.push(
     telegram.config({
       botToken: process.env.TELEGRAM_BOT_TOKEN,
-      webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
     }),
   );
 }

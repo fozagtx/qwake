@@ -15,8 +15,9 @@ Required:
 Optional:
 
 - `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_WEBHOOK_SECRET`
 - `BTL_MODEL`
+
+Telegram is implemented through `@spectrum-ts/telegram`. Set `TELEGRAM_BOT_TOKEN` in Render to enable it; leave it unset for iMessage only.
 
 The BTL Runtime base URL is in code: `https://api.badtheorylabs.com/v1`.
 The default model is `deepseek-v4-flash`, which was verified successfully through BTL Runtime.
@@ -29,6 +30,10 @@ bun run typecheck
 bun run check:btl
 bun start
 ```
+
+## Render
+
+Deploy this service as a Render background worker from the root Blueprint file `render.yaml`.
 
 ## Data policy
 
