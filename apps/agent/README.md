@@ -19,7 +19,7 @@ Optional:
 - `BTL_MODEL`
 
 The BTL Runtime base URL is in code: `https://api.badtheorylabs.com/v1`.
-The default model is `nemotron-3-nano-omni-30b-a3b-reasoning`, which is used unless `BTL_MODEL` is set.
+The default model is `deepseek-v4-flash`, which was verified successfully through BTL Runtime.
 
 ## Run
 

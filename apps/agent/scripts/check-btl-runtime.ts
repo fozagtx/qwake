@@ -6,12 +6,16 @@ if (config === null) {
   process.exit(1);
 }
 
-console.log(`Checking BTL Runtime at ${config.baseURL} with model ${config.model}...`);
+console.log(`Checking BTL Runtime at ${config.baseURL} with chain: ${config.models.join(" -> ")}...`);
 
 try {
-  const response = await checkBtlRuntime();
+  const result = await checkBtlRuntime();
+  for (const failure of result.failedModels) {
+    console.log(`BTL Runtime skipped ${failure.model}: ${failure.error}`);
+  }
+  console.log(`BTL Runtime selected model: ${result.model}`);
   console.log("BTL Runtime response:");
-  console.log(response);
+  console.log(result.response);
 } catch (error) {
   const message = error instanceof Error ? error.message : "Unknown BTL Runtime error";
   console.error(`BTL Runtime check failed: ${message}`);

@@ -1,12 +1,12 @@
 import OpenAI from "openai";
 
 export const BTL_BASE_URL = "https://api.badtheorylabs.com/v1";
-export const DEFAULT_BTL_MODEL = "nemotron-3-nano-omni-30b-a3b-reasoning";
+export const DEFAULT_BTL_MODEL_CHAIN = ["deepseek-v4-flash"] as const;
 
 export type BtlRuntimeConfig = {
   apiKey: string;
   baseURL: string;
-  model: string;
+  models: string[];
 };
 
 export type BtlSummaryInput = {
@@ -28,8 +28,24 @@ export function getBtlRuntimeConfig(): BtlRuntimeConfig | null {
   return {
     apiKey,
     baseURL: BTL_BASE_URL,
-    model: process.env.BTL_MODEL ?? DEFAULT_BTL_MODEL,
+    models: getBtlModelChain(),
   };
+}
+
+export function getBtlModelChain(): string[] {
+  const configuredChain = process.env.BTL_MODEL_CHAIN;
+  if (configuredChain) {
+    return configuredChain
+      .split(",")
+      .map((model) => model.trim())
+      .filter(Boolean);
+  }
+
+  if (process.env.BTL_MODEL) {
+    return [process.env.BTL_MODEL];
+  }
+
+  return [...DEFAULT_BTL_MODEL_CHAIN];
 }
 
 export function requireBtlRuntimeConfig(): BtlRuntimeConfig {
@@ -41,7 +57,7 @@ export function requireBtlRuntimeConfig(): BtlRuntimeConfig {
 }
 
 export function createBtlRuntimeClient(config = getBtlRuntimeConfig()):
-  | { client: OpenAI; model: string }
+  | { client: OpenAI; models: string[] }
   | null {
   if (config === null) {
     return null;
@@ -52,7 +68,7 @@ export function createBtlRuntimeClient(config = getBtlRuntimeConfig()):
       apiKey: config.apiKey,
       baseURL: config.baseURL,
     }),
-    model: config.model,
+    models: config.models,
   };
 }
 
@@ -62,39 +78,73 @@ export async function generateBtlRuntimeSummary(input: BtlSummaryInput): Promise
     return null;
   }
 
-  const completion = await runtime.client.chat.completions.create({
-    model: runtime.model,
-    messages: [
-      {
-        role: "system",
-        content:
-          "You write concise earthquake safety text messages. Use only the supplied live data. Do not predict earthquakes. Do not invent locations, counts, magnitudes, or official instructions.",
-      },
-      {
-        role: "user",
-        content: JSON.stringify(input),
-      },
-    ],
-  });
+  for (const model of runtime.models) {
+    try {
+      const completion = await runtime.client.chat.completions.create({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You write concise earthquake safety text messages. Use only the supplied live data. Do not predict earthquakes. Do not invent locations, counts, magnitudes, or official instructions.",
+          },
+          {
+            role: "user",
+            content: JSON.stringify(input),
+          },
+        ],
+      });
 
-  return completion.choices[0]?.message.content?.trim() || null;
+      const content = completion.choices[0]?.message.content?.trim();
+      if (content) {
+        return content;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
 }
 
-export async function checkBtlRuntime(): Promise<string> {
+export type BtlRuntimeCheckResult = {
+  model: string;
+  response: string;
+  failedModels: Array<{ model: string; error: string }>;
+};
+
+export async function checkBtlRuntime(): Promise<BtlRuntimeCheckResult> {
   const runtime = createBtlRuntimeClient();
   if (runtime === null) {
     throw new Error("BTL_API_KEY is required for the BTL Runtime check");
   }
 
-  const completion = await runtime.client.chat.completions.create({
-    model: runtime.model,
-    messages: [{ role: "user", content: "Say hello from my Runtime workspace." }],
-  });
+  const failedModels: BtlRuntimeCheckResult["failedModels"] = [];
+  for (const model of runtime.models) {
+    try {
+      const completion = await runtime.client.chat.completions.create({
+        model,
+        messages: [{ role: "user", content: "Say hello from my Runtime workspace." }],
+      });
 
-  const content = completion.choices[0]?.message.content?.trim();
-  if (!content) {
-    throw new Error("BTL Runtime returned an empty response");
+      const content = completion.choices[0]?.message.content?.trim();
+      if (!content) {
+        failedModels.push({ model, error: "empty response" });
+        continue;
+      }
+
+      return { model, response: content, failedModels };
+    } catch (error) {
+      failedModels.push({
+        model,
+        error: error instanceof Error ? error.message : "unknown error",
+      });
+    }
   }
 
-  return content;
+  throw new Error(
+    `All BTL Runtime models failed: ${failedModels
+      .map((failure) => `${failure.model}: ${failure.error}`)
+      .join("; ")}`,
+  );
 }

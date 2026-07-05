@@ -36,7 +36,7 @@ There is no authenticated end-user dashboard in this build.
 
 - Earthquake events: USGS past-day GeoJSON feed.
 - Place geocoding: Nominatim/OpenStreetMap live search.
-- Messaging response wording: BTL Runtime through the OpenAI-compatible SDK at `https://api.badtheorylabs.com/v1`, defaulting to `nemotron-3-nano-omni-30b-a3b-reasoning`.
+- Messaging response wording: BTL Runtime through the OpenAI-compatible SDK at `https://api.badtheorylabs.com/v1`, defaulting to `deepseek-v4-flash`.
 
 No sample, fixture, demo, generated, or fallback earthquake data is allowed in product flows.
 
