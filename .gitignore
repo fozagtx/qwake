@@ -1,0 +1,11 @@
+.DS_Store
+.env
+.env.local
+.env.*.local
+.serena/
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+dist/
+*.log

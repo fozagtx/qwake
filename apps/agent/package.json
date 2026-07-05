@@ -1,0 +1,22 @@
+{
+  "name": "agent",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "check:btl": "bun scripts/check-btl-runtime.ts"
+  },
+  "dependencies": {
+    "@spectrum-ts/imessage": "^8.2.1",
+    "@spectrum-ts/telegram": "^8.2.1",
+    "openai": "^6.8.1",
+    "spectrum-ts": "^8.2.1"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "@types/bun": "latest"
+  }
+}
