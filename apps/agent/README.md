@@ -38,4 +38,6 @@ Deploy this service from Railway with root directory `apps/agent`. Railway uses 
 
 ## Data policy
 
-The agent uses the live USGS past-day GeoJSON feed, live geocoding, and Exa Search for current web context. It does not use sample, fixture, fallback, or generated earthquake data. If a live source fails, the agent returns an unavailable message.
+Qwake does not predict earthquakes and does not use sample or fallback earthquake data. If a live source is unavailable, the app shows an unavailable/error state.
+
+The agent uses the live USGS past-day GeoJSON feed, live geocoding, and Exa Search for current web context when available.
