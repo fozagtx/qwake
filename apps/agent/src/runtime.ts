@@ -4,7 +4,6 @@ import { z } from "zod";
 
 export const BTL_BASE_URL = "https://api.badtheorylabs.com/v1";
 export const DEFAULT_BTL_MODEL = "deepseek-v4-flash";
-export const FALLBACK_BTL_MODEL = "gpt-oss-120b";
 
 export type BtlRuntimeConfig = {
   apiKey: string;
@@ -83,7 +82,6 @@ export function createBtlRuntimeClient(config = getBtlRuntimeConfig()) {
   return {
     provider,
     primaryModel: configuredModel,
-    fallbackModel: process.env.BTL_FALLBACK_MODEL ?? FALLBACK_BTL_MODEL,
     modelId: configuredModel,
   };
 }
@@ -91,32 +89,7 @@ export function createBtlRuntimeClient(config = getBtlRuntimeConfig()) {
 type BtlRuntimeClient = NonNullable<ReturnType<typeof createBtlRuntimeClient>>;
 
 async function runBtlRequest<T>(runtime: BtlRuntimeClient, request: (model: string) => Promise<T>): Promise<T> {
-  const candidateModels = getBtlModelCandidates(runtime);
-  let lastError: unknown;
-
-  for (let index = 0; index < candidateModels.length; index += 1) {
-    const model = candidateModels[index];
-    if (model === undefined) {
-      continue;
-    }
-
-    try {
-      return await request(model);
-    } catch (error) {
-      lastError = error;
-      if (index === candidateModels.length - 1 || !shouldFallbackBtlError(error)) {
-        throw error;
-      }
-      await sleep(750 * (index + 1));
-    }
-  }
-
-  throw lastError;
-}
-
-function getBtlModelCandidates(runtime: BtlRuntimeClient): string[] {
-  const models = [runtime.primaryModel, runtime.fallbackModel].filter((model): model is string => Boolean(model));
-  return [...new Set(models)];
+  return request(runtime.primaryModel);
 }
 
 function createRuntimeModel(runtime: BtlRuntimeClient, model: string) {
@@ -247,38 +220,4 @@ function readNullableString(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
-}
-
-function shouldFallbackBtlError(error: unknown): boolean {
-  const status = readNumberProperty(error, "status") ?? readNumberProperty(error, "statusCode");
-  const message = readStringProperty(error, "message");
-  return (
-    status === 402 ||
-    status === 404 ||
-    status === 429 ||
-    (status !== undefined && status >= 500) ||
-    /insufficient (balance|credits)|temporarily unavailable|rate limit|model (not found|unavailable)/i.test(message ?? "")
-  );
-}
-
-function readNumberProperty(value: unknown, key: string): number | undefined {
-  if (typeof value !== "object" || value === null) {
-    return undefined;
-  }
-
-  const property = (value as Record<string, unknown>)[key];
-  return typeof property === "number" ? property : undefined;
-}
-
-function readStringProperty(value: unknown, key: string): string | undefined {
-  if (typeof value !== "object" || value === null) {
-    return undefined;
-  }
-
-  const property = (value as Record<string, unknown>)[key];
-  return typeof property === "string" ? property : undefined;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
