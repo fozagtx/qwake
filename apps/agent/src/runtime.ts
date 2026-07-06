@@ -4,6 +4,7 @@ import { z } from "zod";
 
 export const BTL_BASE_URL = "https://api.badtheorylabs.com/v1";
 export const DEFAULT_BTL_MODEL = "deepseek-v4-flash";
+export const FALLBACK_BTL_MODEL = "gpt-oss-120b";
 
 export type BtlRuntimeConfig = {
   apiKey: string;
@@ -54,7 +55,7 @@ export function getBtlRuntimeConfig(): BtlRuntimeConfig | null {
   return {
     apiKey,
     baseURL: BTL_BASE_URL,
-    model: DEFAULT_BTL_MODEL,
+    model: process.env.BTL_MODEL ?? DEFAULT_BTL_MODEL,
   };
 }
 
@@ -77,29 +78,49 @@ export function createBtlRuntimeClient(config = getBtlRuntimeConfig()) {
     name: "btl",
   });
 
+  const configuredModel = process.env.BTL_MODEL ?? config.model;
+
   return {
-    model: provider.chatModel(config.model),
-    modelId: config.model,
+    provider,
+    primaryModel: configuredModel,
+    fallbackModel: process.env.BTL_FALLBACK_MODEL ?? FALLBACK_BTL_MODEL,
+    modelId: configuredModel,
   };
 }
 
 type BtlRuntimeClient = NonNullable<ReturnType<typeof createBtlRuntimeClient>>;
 
-async function runBtlRequest<T>(runtime: BtlRuntimeClient, request: () => Promise<T>): Promise<T> {
+async function runBtlRequest<T>(runtime: BtlRuntimeClient, request: (model: string) => Promise<T>): Promise<T> {
+  const candidateModels = getBtlModelCandidates(runtime);
   let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+
+  for (let index = 0; index < candidateModels.length; index += 1) {
+    const model = candidateModels[index];
+    if (model === undefined) {
+      continue;
+    }
+
     try {
-      return await request();
+      return await request(model);
     } catch (error) {
       lastError = error;
-      if (!isRetryableBtlError(error) || attempt === 2) {
+      if (index === candidateModels.length - 1 || !shouldFallbackBtlError(error)) {
         throw error;
       }
-      await sleep(750 * (attempt + 1));
+      await sleep(750 * (index + 1));
     }
   }
 
   throw lastError;
+}
+
+function getBtlModelCandidates(runtime: BtlRuntimeClient): string[] {
+  const models = [runtime.primaryModel, runtime.fallbackModel].filter((model): model is string => Boolean(model));
+  return [...new Set(models)];
+}
+
+function createRuntimeModel(runtime: BtlRuntimeClient, model: string) {
+  return runtime.provider.chatModel(model);
 }
 
 export async function planBtlAgentTurn(userText: string): Promise<QwakeAgentPlan> {
@@ -108,9 +129,9 @@ export async function planBtlAgentTurn(userText: string): Promise<QwakeAgentPlan
     throw new Error("BTL_API_KEY is required");
   }
 
-  const { object } = await runBtlRequest(runtime, () =>
+  const { object } = await runBtlRequest(runtime, (model) =>
     generateObject({
-      model: runtime.model,
+      model: createRuntimeModel(runtime, model),
       schema: qwakeAgentPlanSchema,
       system: [
         "You are Qwake, an earthquake safety messaging agent. Decide whether to answer directly or call live tools.",
@@ -138,9 +159,9 @@ export async function composeBtlAgentReply(input: QwakeAgentReplyInput): Promise
     throw new Error("BTL_API_KEY is required");
   }
 
-  const { text } = await runBtlRequest(runtime, () =>
+  const { text } = await runBtlRequest(runtime, (model) =>
     generateText({
-      model: runtime.model,
+      model: createRuntimeModel(runtime, model),
       system:
         "You are Qwake, an earthquake safety messaging agent. Write a concise text-message response using only the supplied live tool result. Do not predict earthquakes. Do not invent locations, counts, magnitudes, official guidance, or sources. Keep the answer readable and short.",
       prompt: JSON.stringify(input),
@@ -156,9 +177,9 @@ export async function generateBtlRuntimeSummary(input: BtlSummaryInput): Promise
     return null;
   }
 
-  const { text } = await runBtlRequest(runtime, () =>
+  const { text } = await runBtlRequest(runtime, (model) =>
     generateText({
-      model: runtime.model,
+      model: createRuntimeModel(runtime, model),
       system:
         "You write concise earthquake safety text messages. Use only the supplied live data. Do not predict earthquakes. Do not invent locations, counts, magnitudes, or official instructions.",
       prompt: JSON.stringify(input),
@@ -179,9 +200,9 @@ export async function checkBtlRuntime(): Promise<BtlRuntimeCheckResult> {
     throw new Error("BTL_API_KEY is required for the BTL Runtime check");
   }
 
-  const { text } = await runBtlRequest(runtime, () =>
+  const { text } = await runBtlRequest(runtime, (model) =>
     generateText({
-      model: runtime.model,
+      model: createRuntimeModel(runtime, model),
       system: "You are a concise assistant.",
       prompt: "Say hello from my Runtime workspace.",
     }),
@@ -228,9 +249,16 @@ function readNullableString(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
-function isRetryableBtlError(error: unknown): boolean {
+function shouldFallbackBtlError(error: unknown): boolean {
   const status = readNumberProperty(error, "status") ?? readNumberProperty(error, "statusCode");
-  return status === 429 || (status !== undefined && status >= 500);
+  const message = readStringProperty(error, "message");
+  return (
+    status === 402 ||
+    status === 404 ||
+    status === 429 ||
+    (status !== undefined && status >= 500) ||
+    /insufficient (balance|credits)|temporarily unavailable|rate limit|model (not found|unavailable)/i.test(message ?? "")
+  );
 }
 
 function readNumberProperty(value: unknown, key: string): number | undefined {
@@ -240,6 +268,15 @@ function readNumberProperty(value: unknown, key: string): number | undefined {
 
   const property = (value as Record<string, unknown>)[key];
   return typeof property === "number" ? property : undefined;
+}
+
+function readStringProperty(value: unknown, key: string): string | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+
+  const property = (value as Record<string, unknown>)[key];
+  return typeof property === "string" ? property : undefined;
 }
 
 function sleep(ms: number): Promise<void> {
