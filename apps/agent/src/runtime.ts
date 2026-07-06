@@ -1,7 +1,9 @@
-import OpenAI from "openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { generateObject, generateText } from "ai";
+import { z } from "zod";
 
 export const BTL_BASE_URL = "https://api.badtheorylabs.com/v1";
-export const DEFAULT_BTL_MODEL = "gpt-oss-120b";
+export const DEFAULT_BTL_MODEL = "deepseek-v4-flash";
 
 export type BtlRuntimeConfig = {
   apiKey: string;
@@ -35,10 +37,13 @@ export type QwakeAgentReplyInput = {
   toolResult: string;
 };
 
-type BtlMessage = {
-  role: "system" | "user";
-  content: string;
-};
+const qwakeAgentPlanSchema = z.object({
+  intent: z.enum(["chat", "location_check", "active_hazards", "unsupported"]),
+  locationQuery: z.string().nullable(),
+  scope: z.enum(["global", "united_states"]),
+  includeWebContext: z.boolean(),
+  reply: z.string().nullable(),
+});
 
 export function getBtlRuntimeConfig(): BtlRuntimeConfig | null {
   const apiKey = process.env.BTL_API_KEY;
@@ -61,33 +66,30 @@ export function requireBtlRuntimeConfig(): BtlRuntimeConfig {
   return config;
 }
 
-export function createBtlRuntimeClient(config = getBtlRuntimeConfig()):
-  | { client: OpenAI; model: string }
-  | null {
+export function createBtlRuntimeClient(config = getBtlRuntimeConfig()) {
   if (config === null) {
     return null;
   }
 
+  const provider = createOpenAICompatible({
+    apiKey: config.apiKey,
+    baseURL: config.baseURL,
+    name: "btl",
+  });
+
   return {
-    client: new OpenAI({
-      apiKey: config.apiKey,
-      baseURL: config.baseURL,
-    }),
-    model: config.model,
+    model: provider.chatModel(config.model),
+    modelId: config.model,
   };
 }
 
-async function createBtlChatCompletion(
-  runtime: { client: OpenAI; model: string },
-  messages: BtlMessage[],
-) {
+type BtlRuntimeClient = NonNullable<ReturnType<typeof createBtlRuntimeClient>>;
+
+async function runBtlRequest<T>(runtime: BtlRuntimeClient, request: () => Promise<T>): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      return await runtime.client.chat.completions.create({
-        model: runtime.model,
-        messages,
-      });
+      return await request();
     } catch (error) {
       lastError = error;
       if (!isRetryableBtlError(error) || attempt === 2) {
@@ -106,32 +108,28 @@ export async function planBtlAgentTurn(userText: string): Promise<QwakeAgentPlan
     throw new Error("BTL_API_KEY is required");
   }
 
-  const completion = await createBtlChatCompletion(runtime, [
-      {
-        role: "system",
-        content: [
-          "You are Qwake, an earthquake safety messaging agent. Decide whether to answer directly or call live tools.",
-          "Return only compact JSON. Do not use markdown.",
-          "Schema: {\"intent\":\"chat|location_check|active_hazards|unsupported\",\"locationQuery\":string|null,\"scope\":\"global|united_states\",\"includeWebContext\":boolean,\"reply\":string|null}",
-          "Use chat for greetings, casual messages, and questions about how Qwake works. Reply naturally and briefly.",
-          "Use location_check only when the user asks to check a specific place/coordinates or gives their location. Extract the clean place only.",
-          "Use active_hazards when the user asks what places were affected, where earthquakes happened, vulnerable areas, dangerous areas, or earthquakes today/now.",
-          "Use unsupported for unrelated non-earthquake requests; briefly explain Qwake can help with live earthquake checks.",
-          "Set includeWebContext true only when the user asks for news, latest advisories, sources, reports, web context, or more details.",
-          "The word live can mean the user lives somewhere. If the user writes 'live <place>' or 'I live in <place>', treat <place> as the locationQuery and keep includeWebContext false unless they also ask for news/advisories.",
-          "Users may type noisy text. Typos like 'eart5huake' can mean earthquake. Questions like 'which part did earthquake affect today' are active_hazards.",
-          "Do not invent earthquake facts. Tool results will provide live earthquake data later.",
-        ].join(" "),
-      },
-      { role: "user", content: userText },
-    ]);
+  const { object } = await runBtlRequest(runtime, () =>
+    generateObject({
+      model: runtime.model,
+      schema: qwakeAgentPlanSchema,
+      system: [
+        "You are Qwake, an earthquake safety messaging agent. Decide whether to answer directly or call live tools.",
+        "Return only compact JSON. Do not use markdown.",
+        'Schema: {"intent":"chat|location_check|active_hazards|unsupported","locationQuery":string|null,"scope":"global|united_states","includeWebContext":boolean,"reply":string|null}',
+        "Use chat for greetings, casual messages, and questions about how Qwake works. Reply naturally and briefly.",
+        "Use location_check only when the user asks to check a specific place/coordinates or gives their location. Extract the clean place only.",
+        "Use active_hazards when the user asks what places were affected, where earthquakes happened, vulnerable areas, dangerous areas, or earthquakes today/now.",
+        "Use unsupported for unrelated non-earthquake requests; briefly explain Qwake can help with live earthquake checks.",
+        "Set includeWebContext true only when the user asks for news, latest advisories, sources, reports, web context, or more details.",
+        "The word live can mean the user lives somewhere. If the user writes 'live <place>' or 'I live in <place>', treat <place> as the locationQuery and keep includeWebContext false unless they also ask for news/advisories.",
+        "Users may type noisy text. Typos like 'eart5huake' can mean earthquake. Questions like 'which part did earthquake affect today' are active_hazards.",
+        "Do not invent earthquake facts. Tool results will provide live earthquake data later.",
+      ].join(" "),
+      prompt: userText,
+    }),
+  );
 
-  const content = completion.choices[0]?.message.content?.trim();
-  if (!content) {
-    throw new Error("BTL Runtime returned an empty agent plan");
-  }
-
-  return normalizeAgentPlan(parseJsonObject(content));
+  return normalizeAgentPlan(object);
 }
 
 export async function composeBtlAgentReply(input: QwakeAgentReplyInput): Promise<string> {
@@ -140,19 +138,16 @@ export async function composeBtlAgentReply(input: QwakeAgentReplyInput): Promise
     throw new Error("BTL_API_KEY is required");
   }
 
-  const completion = await createBtlChatCompletion(runtime, [
-      {
-        role: "system",
-        content:
-          "You are Qwake, an earthquake safety messaging agent. Write a concise text-message response using only the supplied live tool result. Do not predict earthquakes. Do not invent locations, counts, magnitudes, official guidance, or sources. Keep the answer readable and short.",
-      },
-      {
-        role: "user",
-        content: JSON.stringify(input),
-      },
-    ]);
+  const { text } = await runBtlRequest(runtime, () =>
+    generateText({
+      model: runtime.model,
+      system:
+        "You are Qwake, an earthquake safety messaging agent. Write a concise text-message response using only the supplied live tool result. Do not predict earthquakes. Do not invent locations, counts, magnitudes, official guidance, or sources. Keep the answer readable and short.",
+      prompt: JSON.stringify(input),
+    }),
+  );
 
-  return completion.choices[0]?.message.content?.trim() || input.toolResult;
+  return text.trim() || input.toolResult;
 }
 
 export async function generateBtlRuntimeSummary(input: BtlSummaryInput): Promise<string | null> {
@@ -161,19 +156,16 @@ export async function generateBtlRuntimeSummary(input: BtlSummaryInput): Promise
     return null;
   }
 
-  const completion = await createBtlChatCompletion(runtime, [
-      {
-        role: "system",
-        content:
-          "You write concise earthquake safety text messages. Use only the supplied live data. Do not predict earthquakes. Do not invent locations, counts, magnitudes, or official instructions.",
-      },
-      {
-        role: "user",
-        content: JSON.stringify(input),
-      },
-    ]);
+  const { text } = await runBtlRequest(runtime, () =>
+    generateText({
+      model: runtime.model,
+      system:
+        "You write concise earthquake safety text messages. Use only the supplied live data. Do not predict earthquakes. Do not invent locations, counts, magnitudes, or official instructions.",
+      prompt: JSON.stringify(input),
+    }),
+  );
 
-  return completion.choices[0]?.message.content?.trim() || null;
+  return text.trim() || null;
 }
 
 export type BtlRuntimeCheckResult = {
@@ -187,28 +179,20 @@ export async function checkBtlRuntime(): Promise<BtlRuntimeCheckResult> {
     throw new Error("BTL_API_KEY is required for the BTL Runtime check");
   }
 
-  const completion = await createBtlChatCompletion(runtime, [
-    { role: "user", content: "Say hello from my Runtime workspace." },
-  ]);
+  const { text } = await runBtlRequest(runtime, () =>
+    generateText({
+      model: runtime.model,
+      system: "You are a concise assistant.",
+      prompt: "Say hello from my Runtime workspace.",
+    }),
+  );
 
-  const content = completion.choices[0]?.message.content?.trim();
+  const content = text.trim();
   if (!content) {
     throw new Error("BTL Runtime returned an empty response");
   }
 
-  return { model: runtime.model, response: content };
-}
-
-function parseJsonObject(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) {
-      throw new Error("BTL Runtime agent plan was not valid JSON");
-    }
-    return JSON.parse(match[0]);
-  }
+  return { model: runtime.modelId, response: content };
 }
 
 function normalizeAgentPlan(value: unknown): QwakeAgentPlan {
@@ -245,7 +229,7 @@ function readNullableString(value: unknown): string | null {
 }
 
 function isRetryableBtlError(error: unknown): boolean {
-  const status = readNumberProperty(error, "status");
+  const status = readNumberProperty(error, "status") ?? readNumberProperty(error, "statusCode");
   return status === 429 || (status !== undefined && status >= 500);
 }
 

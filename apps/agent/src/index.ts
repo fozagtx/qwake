@@ -433,7 +433,7 @@ async function planAgentTurn(text: string): Promise<QwakeAgentPlan> {
         error: formatError(error),
       }),
     );
-    return planFallbackAgentTurn(text);
+    throw error;
   }
 }
 
@@ -453,47 +453,6 @@ async function composeAgentReply(input: {
     );
     return input.toolResult;
   }
-}
-
-function planFallbackAgentTurn(text: string): QwakeAgentPlan {
-  const includeWebContext = shouldUseExaContext(text);
-  if (isCasualMessage(text)) {
-    return {
-      intent: "chat",
-      locationQuery: null,
-      scope: "global",
-      includeWebContext: false,
-      reply: "Hey. Where are you right now, and what do you want to know about earthquakes: nearby safety, affected places today, or latest advisories?",
-    };
-  }
-
-  if (isActiveHazardRequest(text)) {
-    return {
-      intent: "active_hazards",
-      locationQuery: null,
-      scope: "global",
-      includeWebContext,
-      reply: null,
-    };
-  }
-
-  if (shouldRunLocationCheck(text)) {
-    return {
-      intent: "location_check",
-      locationQuery: extractLocationQuery(text),
-      scope: "global",
-      includeWebContext,
-      reply: null,
-    };
-  }
-
-  return {
-    intent: "chat",
-    locationQuery: null,
-    scope: "global",
-    includeWebContext: false,
-    reply: "I can help with earthquake safety. Where are you, and do you want nearby risk, places affected today, or latest advisories?",
-  };
 }
 
 function isCasualMessage(text: string): boolean {
