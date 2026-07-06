@@ -28,7 +28,7 @@ export function getBtlRuntimeConfig(): BtlRuntimeConfig | null {
   return {
     apiKey,
     baseURL: BTL_BASE_URL,
-    model: process.env.BTL_MODEL ?? DEFAULT_BTL_MODEL,
+    model: DEFAULT_BTL_MODEL,
   };
 }
 

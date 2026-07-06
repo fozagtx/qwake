@@ -15,12 +15,11 @@ Required:
 Optional:
 
 - `TELEGRAM_BOT_TOKEN`
-- `BTL_MODEL`
 
 Telegram is implemented through `@spectrum-ts/telegram`. Set `TELEGRAM_BOT_TOKEN` in Railway to enable it; leave it unset for iMessage only.
 
 The BTL Runtime base URL is in code: `https://api.badtheorylabs.com/v1`.
-The default model is `deepseek-v4-flash`, which was verified successfully through BTL Runtime.
+The BTL Runtime model is in code: `deepseek-v4-flash`.
 
 ## Run
 

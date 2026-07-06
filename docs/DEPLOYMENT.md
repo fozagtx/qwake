@@ -57,14 +57,16 @@ Telegram Railway environment variable:
 
 `TELEGRAM_BOT_TOKEN` is the Telegram BotFather token. The agent registers the Telegram provider only when this value is present. If it is missing, the service runs iMessage only.
 
-Optional Railway environment variables:
-
-- `BTL_MODEL=deepseek-v4-flash`
-
 The BTL Runtime base URL is not a secret and is hardcoded in `apps/agent/src/runtime.ts`:
 
 ```text
 https://api.badtheorylabs.com/v1
+```
+
+The BTL Runtime model is also hardcoded in `apps/agent/src/runtime.ts`:
+
+```text
+deepseek-v4-flash
 ```
 
 Railway local verification:

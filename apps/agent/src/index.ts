@@ -70,21 +70,35 @@ type RiskAssessment = {
 };
 
 const configuredProviders: PlatformProviderConfig[] = [imessage.config()];
-requireBtlRuntimeConfig();
+const btlRuntimeConfig = requireBtlRuntimeConfig();
+const telegramEnabled = Boolean(process.env.TELEGRAM_BOT_TOKEN);
+const projectId = requiredEnv("PROJECT_ID");
+const projectSecret = requiredEnv("PROJECT_SECRET");
 
-if (process.env.TELEGRAM_BOT_TOKEN) {
+if (telegramEnabled) {
   configuredProviders.push(
     telegram.config({
-      botToken: process.env.TELEGRAM_BOT_TOKEN,
+      botToken: requiredEnv("TELEGRAM_BOT_TOKEN"),
     }),
   );
 }
 
+console.info(
+  JSON.stringify({
+    event: "qwake.agent.boot",
+    providers: telegramEnabled ? ["imessage", "telegram"] : ["imessage"],
+    btlBaseURL: btlRuntimeConfig.baseURL,
+    btlModel: btlRuntimeConfig.model,
+  }),
+);
+
 const app = await Spectrum({
-  projectId: requiredEnv("PROJECT_ID"),
-  projectSecret: requiredEnv("PROJECT_SECRET"),
+  projectId,
+  projectSecret,
   providers: configuredProviders,
 });
+
+console.info(JSON.stringify({ event: "qwake.agent.ready" }));
 
 for await (const [space, message] of app.messages) {
   if (message.content.type !== "text") {
