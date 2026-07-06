@@ -12,6 +12,7 @@
   "dependencies": {
     "@spectrum-ts/imessage": "^8.2.1",
     "@spectrum-ts/telegram": "^8.2.1",
+    "exa-js": "^2.16.0",
     "openai": "^6.8.1",
     "spectrum-ts": "^8.2.1"
   },

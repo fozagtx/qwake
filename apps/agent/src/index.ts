@@ -1,12 +1,75 @@
 import { Spectrum, type PlatformProviderConfig } from "spectrum-ts";
 import { imessage } from "@spectrum-ts/imessage";
 import { telegram } from "@spectrum-ts/telegram";
-import { generateBtlRuntimeSummary, requireBtlRuntimeConfig } from "./runtime";
+import { requireExaSearchConfig, searchExaContext } from "./exa-search";
+import { requireBtlRuntimeConfig } from "./runtime";
 
 const USGS_PAST_DAY_URL =
   "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson";
 const USER_AGENT = "qwake-earthquake-agent/1.0";
 const DEFAULT_RADIUS_KM = 300;
+const ACTIVE_HAZARD_LIMIT = 5;
+const UNITED_STATES_ALIASES = new Set(["america", "the usa", "united states", "united states of america", "us", "usa"]);
+const UNITED_STATES_PLACE_TERMS = [
+  "alabama",
+  "alaska",
+  "arizona",
+  "arkansas",
+  "california",
+  "colorado",
+  "connecticut",
+  "delaware",
+  "florida",
+  "georgia",
+  "hawaii",
+  "idaho",
+  "illinois",
+  "indiana",
+  "iowa",
+  "kansas",
+  "kentucky",
+  "louisiana",
+  "maine",
+  "maryland",
+  "massachusetts",
+  "michigan",
+  "minnesota",
+  "mississippi",
+  "missouri",
+  "montana",
+  "nebraska",
+  "nevada",
+  "new hampshire",
+  "new jersey",
+  "new mexico",
+  "new york",
+  "north carolina",
+  "north dakota",
+  "ohio",
+  "oklahoma",
+  "oregon",
+  "pennsylvania",
+  "rhode island",
+  "south carolina",
+  "south dakota",
+  "tennessee",
+  "texas",
+  "utah",
+  "vermont",
+  "virginia",
+  "washington",
+  "west virginia",
+  "wisconsin",
+  "wyoming",
+  "aleutian islands",
+  "alaska peninsula",
+  "hawaiian islands",
+  "puerto rico",
+  "virgin islands",
+  "guam",
+  "northern mariana",
+  "american samoa",
+];
 
 type RiskTier = "clear" | "watch" | "caution" | "danger" | "unavailable";
 
@@ -69,9 +132,13 @@ type RiskAssessment = {
   guidance: string;
 };
 
+type RankedEarthquakeEvent = EarthquakeEvent & { riskTier: RiskTier };
+
 const configuredProviders: PlatformProviderConfig[] = [imessage.config()];
 const btlRuntimeConfig = requireBtlRuntimeConfig();
+requireExaSearchConfig();
 const telegramEnabled = Boolean(process.env.TELEGRAM_BOT_TOKEN);
+const providerNames = telegramEnabled ? ["imessage", "telegram"] : ["imessage"];
 const projectId = requiredEnv("PROJECT_ID");
 const projectSecret = requiredEnv("PROJECT_SECRET");
 
@@ -86,7 +153,10 @@ if (telegramEnabled) {
 console.info(
   JSON.stringify({
     event: "qwake.agent.boot",
-    providers: telegramEnabled ? ["imessage", "telegram"] : ["imessage"],
+    projectId: maskIdentifier(projectId),
+    providers: providerNames,
+    telegramEnabled,
+    exaSearch: "required",
     btlBaseURL: btlRuntimeConfig.baseURL,
     btlModel: btlRuntimeConfig.model,
   }),
@@ -101,15 +171,56 @@ const app = await Spectrum({
 console.info(JSON.stringify({ event: "qwake.agent.ready" }));
 
 for await (const [space, message] of app.messages) {
+  const platform =
+    getStringProperty(message, "platform") ??
+    getStringProperty(message, "__platform") ??
+    getStringProperty(space, "platform") ??
+    getStringProperty(space, "__platform") ??
+    "unknown";
+  const maskedSpaceId = maskIdentifier(getStringProperty(space, "id") ?? "unknown");
+
+  console.info(
+    JSON.stringify({
+      event: "qwake.agent.inbound",
+      platform,
+      contentType: message.content.type,
+      spaceId: maskedSpaceId,
+    }),
+  );
+
   if (message.content.type !== "text") {
     await space.send("Send a place name or coordinates, and I will check live USGS earthquakes from the past 24 hours.");
+    console.info(
+      JSON.stringify({
+        event: "qwake.agent.reply_sent",
+        platform,
+        contentType: "help",
+        spaceId: maskedSpaceId,
+      }),
+    );
     continue;
   }
 
   try {
     const response = await handleTextMessage(message.content.text);
     await space.send(response);
+    console.info(
+      JSON.stringify({
+        event: "qwake.agent.reply_sent",
+        platform,
+        contentType: "risk_assessment",
+        spaceId: maskedSpaceId,
+      }),
+    );
   } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "qwake.agent.reply_error",
+        platform,
+        spaceId: maskedSpaceId,
+        error: formatError(error),
+      }),
+    );
     await space.send(formatError(error));
   }
 }
@@ -120,6 +231,23 @@ function requiredEnv(name: string): string {
     throw new Error(`${name} is required`);
   }
   return value;
+}
+
+function getStringProperty(value: unknown, key: string): string | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+
+  const property = (value as Record<string, unknown>)[key];
+  return typeof property === "string" ? property : undefined;
+}
+
+function maskIdentifier(value: string): string {
+  if (value.length <= 8) {
+    return value;
+  }
+
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
 async function handleTextMessage(text: string): Promise<string> {
@@ -136,9 +264,92 @@ async function handleTextMessage(text: string): Promise<string> {
     return "Alerts are not enabled in this build yet. No subscription was created.";
   }
 
-  const location = await resolveLocation(trimmed);
+  if (isActiveHazardRequest(trimmed)) {
+    return summarizeActiveHazards("globally");
+  }
+
+  const locationQuery = extractLocationQuery(trimmed);
+  if (isUnitedStatesQuery(locationQuery)) {
+    return summarizeActiveHazards(
+      "in the United States",
+      isLikelyUnitedStatesEvent,
+      "United States is too broad for a precise safety radius. Send a city, state, or coordinates for a personal check.",
+    );
+  }
+
+  const location = await resolveLocation(locationQuery);
   const assessment = await assessLocationRisk(location, DEFAULT_RADIUS_KM);
   return summarizeAssessment(assessment);
+}
+
+function isActiveHazardRequest(text: string): boolean {
+  if (parseCoordinates(text) !== null) {
+    return false;
+  }
+
+  const normalized = normalizeText(text);
+  return (
+    /\b(where|which|what)\b.*\b(earthquakes?|quakes?|danger(?:ous)?|unsafe|risk|risks|risky|vulnerable|affected|avoid)\b/.test(
+      normalized,
+    ) ||
+    /\b(vulnerable|dangerous|unsafe|affected|avoid|risk|risks|risky)\b.*\b(areas?|places?|locations?|regions?)\b/.test(
+      normalized,
+    ) ||
+    /\b(areas?|places?|locations?|regions?)\b.*\b(vulnerable|dangerous|unsafe|affected|avoid|risk|risks|risky)\b/.test(
+      normalized,
+    )
+  );
+}
+
+function extractLocationQuery(text: string): string {
+  if (parseCoordinates(text) !== null) {
+    return text;
+  }
+
+  const directPatterns = [
+    /^(?:i\s*(?:am|'m)|im|am|we\s*(?:are|'re)|we're)\s+(?:currently\s+)?(?:in|at|near|around)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
+    /^(?:my\s+location\s+is|location\s*:?)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
+    /^(?:check|scan|assess|look\s+up|tell\s+me\s+about)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
+  ];
+
+  for (const pattern of directPatterns) {
+    const match = text.match(pattern);
+    const location = match?.[1];
+    if (location) {
+      return cleanLocationQuery(location);
+    }
+  }
+
+  const trailingLocation = text.match(/\b(?:in|at|near|around)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i)?.[1];
+  if (trailingLocation) {
+    return cleanLocationQuery(trailingLocation);
+  }
+
+  return cleanLocationQuery(text);
+}
+
+function cleanLocationQuery(text: string): string {
+  return text
+    .replace(/[.!?]+$/g, "")
+    .replace(/\b(?:right\s+now|now|rn|currently)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeLocationAlias(text: string): string {
+  return normalizeText(text).replace(/\bu\s+s\b/g, "us").replace(/\bthe\s+/g, "").trim();
+}
+
+function isUnitedStatesQuery(text: string): boolean {
+  return UNITED_STATES_ALIASES.has(normalizeLocationAlias(text));
 }
 
 async function resolveLocation(text: string): Promise<LocationResult> {
@@ -260,6 +471,92 @@ function toEarthquakeEvent(feature: UsgsFeature): EarthquakeEvent | null {
   };
 }
 
+async function summarizeActiveHazards(
+  scopeLabel: string,
+  filterEvents: (event: EarthquakeEvent) => boolean = () => true,
+  note?: string,
+): Promise<string> {
+  const { events, generatedUtc } = await fetchRecentEarthquakes();
+  const scopedEvents = events.filter(filterEvents);
+  const rankedEvents = rankEarthquakeEvents(scopedEvents);
+  const notableEvents = rankedEvents
+    .filter((event) => event.riskTier !== "clear")
+    .slice(0, ACTIVE_HAZARD_LIMIT);
+
+  const lines = [`Live earthquake risk areas ${scopeLabel} from the past 24 hours:`];
+  if (note) {
+    lines.push(note);
+  }
+
+  if (events.length === 0) {
+    lines.push("USGS returned no live events in the past-day feed. No fallback data is used.");
+  } else if (scopedEvents.length === 0) {
+    lines.push(`No live USGS events matched ${scopeLabel}.`);
+  } else if (notableEvents.length === 0) {
+    lines.push(`No WATCH, CAUTION, or DANGER events matched ${scopeLabel}.`);
+  } else {
+    notableEvents.forEach((event, index) => {
+      lines.push(formatActiveHazardLine(event, index + 1));
+    });
+  }
+
+  lines.push("This is not a prediction. Avoid affected areas only when official local guidance or visible damage says so.");
+  lines.push("Send a city or coordinates for a personal radius check.");
+  lines.push(`Source: USGS past-day feed generated ${generatedUtc}`);
+
+  const exaContext = await searchExaContext(buildExaHazardQuery(scopeLabel, notableEvents));
+  if (exaContext) {
+    lines.push(exaContext);
+  }
+
+  return lines.join("\n");
+}
+
+function rankEarthquakeEvents(events: EarthquakeEvent[]): RankedEarthquakeEvent[] {
+  return events
+    .map((event) => ({
+      ...event,
+      riskTier: classifyEvent(event),
+    }))
+    .sort(
+      (left, right) =>
+        riskTierScore(right.riskTier) - riskTierScore(left.riskTier) ||
+        right.magnitude - left.magnitude ||
+        right.significance - left.significance ||
+        Date.parse(right.timeUtc) - Date.parse(left.timeUtc),
+    );
+}
+
+function formatActiveHazardLine(event: RankedEarthquakeEvent, index: number): string {
+  const timeUtc = event.timeUtc.replace(".000Z", "Z");
+  const tsunami = event.tsunami === 1 ? " tsunami flag" : "";
+  const alert = event.alert === "none" ? "" : ` alert ${event.alert}`;
+  return `${index}. ${event.riskTier.toUpperCase()} - M${event.magnitude.toFixed(1)} near ${event.place}; depth ${event.depthKm.toFixed(
+    0,
+  )} km; ${timeUtc}${alert}${tsunami}`;
+}
+
+function isLikelyUnitedStatesEvent(event: EarthquakeEvent): boolean {
+  const place = normalizeText(event.place);
+  return UNITED_STATES_PLACE_TERMS.some((term) => place.includes(term));
+}
+
+function buildExaHazardQuery(scopeLabel: string, events: RankedEarthquakeEvent[]): string {
+  const eventPlaces = events
+    .slice(0, 3)
+    .map((event) => `M${event.magnitude.toFixed(1)} ${event.place}`)
+    .join("; ");
+
+  return [
+    "current earthquake official advisory emergency update",
+    scopeLabel,
+    eventPlaces,
+    "USGS local emergency management tsunami aftershock road closure shelter",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 async function assessLocationRisk(
   location: LocationResult,
   radiusKm: number,
@@ -332,7 +629,7 @@ function classifyEvent(event: EarthquakeEvent): RiskTier {
   return "clear";
 }
 
-function highestTier(tiers: RiskTier[]): RiskTier {
+function riskTierScore(tier: RiskTier): number {
   const tierRank: Record<RiskTier, number> = {
     unavailable: 0,
     clear: 1,
@@ -340,7 +637,11 @@ function highestTier(tiers: RiskTier[]): RiskTier {
     caution: 3,
     danger: 4,
   };
-  return tiers.reduce((highest, tier) => (tierRank[tier] > tierRank[highest] ? tier : highest), "clear");
+  return tierRank[tier];
+}
+
+function highestTier(tiers: RiskTier[]): RiskTier {
+  return tiers.reduce((highest, tier) => (riskTierScore(tier) > riskTierScore(highest) ? tier : highest), "clear");
 }
 
 function guidanceForTier(tier: RiskTier): string {
@@ -361,34 +662,32 @@ function guidanceForTier(tier: RiskTier): string {
 
 async function summarizeAssessment(assessment: RiskAssessment): Promise<string> {
   const deterministic = formatAssessment(assessment);
-  const topEvents = assessment.nearbyEvents.slice(0, 3).map((event) => ({
-    place: event.place,
-    magnitude: event.magnitude,
-    distanceKm: Math.round(event.distanceKm),
-    depthKm: event.depthKm,
-    timeUtc: event.timeUtc,
-    alert: event.alert,
-    tsunami: event.tsunami,
-    url: event.url,
-  }));
+  return appendExaContext(deterministic, assessment);
+}
 
-  try {
-    const content = await generateBtlRuntimeSummary({
-      location: assessment.location,
-      tier: assessment.tier,
-      summary: assessment.summary,
-      guidance: assessment.guidance,
-      sourceGeneratedUtc: assessment.sourceGeneratedUtc,
-      consideredEvents: assessment.consideredEvents,
-      topEvents,
-    });
-    if (!content) {
-      return deterministic;
-    }
-    return `${content}\n\nSource: USGS past-day feed generated ${assessment.sourceGeneratedUtc}`;
-  } catch (error) {
-    return `${deterministic}\n\nBTL Runtime summary unavailable: ${formatError(error)}`;
+async function appendExaContext(message: string, assessment: RiskAssessment): Promise<string> {
+  const exaContext = await searchExaContext(buildExaAssessmentQuery(assessment));
+  if (!exaContext) {
+    return message;
   }
+
+  return `${message}\n\n${exaContext}`;
+}
+
+function buildExaAssessmentQuery(assessment: RiskAssessment): string {
+  const eventPlaces = assessment.nearbyEvents
+    .slice(0, 3)
+    .map((event) => `M${event.magnitude.toFixed(1)} ${event.place}`)
+    .join("; ");
+
+  return [
+    "current earthquake official advisory emergency update near",
+    assessment.location.label,
+    eventPlaces,
+    "USGS local emergency management tsunami aftershock road closure shelter",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function formatAssessment(assessment: RiskAssessment): string {
