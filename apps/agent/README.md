@@ -33,7 +33,7 @@ bun start
 
 ## Render
 
-Deploy this service as a Render background worker from the root Blueprint file `render.yaml`.
+Deploy this service as a Render background worker from the root Blueprint file `render.yaml`. Render builds `apps/agent/Dockerfile`, which uses Bun inside Docker.
 
 ## Data policy
 

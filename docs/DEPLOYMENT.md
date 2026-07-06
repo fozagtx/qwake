@@ -42,10 +42,10 @@ Render service settings:
 
 - Blueprint file: `render.yaml`
 - Service type: background worker
-- Runtime: Bun
-- Root directory: `apps/agent`
-- Build command: `bun install --frozen-lockfile`
-- Start command: `bun start`
+- Runtime: Docker
+- Docker context: `apps/agent`
+- Dockerfile: `apps/agent/Dockerfile`
+- Container command: `bun start`
 
 Required Render environment variables:
 
