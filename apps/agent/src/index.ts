@@ -355,19 +355,25 @@ function splitLongText(text: string, maxLength: number): string[] {
 async function handleTextMessage(text: string): Promise<string> {
   const trimmed = text.trim();
   if (!trimmed || /^\/?(start|help)$/i.test(trimmed)) {
-    return [
-      "Send a place name or coordinates like `Tokyo` or `35.6762, 139.6503`.",
-      "I will check live USGS earthquakes from the past 24 hours and tell you the nearest risk tier.",
-      "This does not predict earthquakes. It only checks live reported events and official USGS fields.",
-    ].join("\n");
+    return getUsagePrompt();
   }
 
   if (/^\/?(stop|unsubscribe)$/i.test(trimmed)) {
     return "Alerts are not enabled in this build yet. No subscription was created.";
   }
 
+  if (isCasualMessage(trimmed)) {
+    return getUsagePrompt();
+  }
+
+  const includeWebContext = shouldUseExaContext(trimmed);
+
   if (isActiveHazardRequest(trimmed)) {
-    return summarizeActiveHazards("globally");
+    return summarizeActiveHazards("globally", undefined, undefined, includeWebContext);
+  }
+
+  if (!shouldRunLocationCheck(trimmed)) {
+    return getUsagePrompt();
   }
 
   const locationQuery = extractLocationQuery(trimmed);
@@ -376,12 +382,61 @@ async function handleTextMessage(text: string): Promise<string> {
       "in the United States",
       isLikelyUnitedStatesEvent,
       "United States is too broad for a precise safety radius. Send a city, state, or coordinates for a personal check.",
+      includeWebContext,
     );
   }
 
   const location = await resolveLocation(locationQuery);
   const assessment = await assessLocationRisk(location, DEFAULT_RADIUS_KM);
-  return summarizeAssessment(assessment);
+  return summarizeAssessment(assessment, includeWebContext);
+}
+
+function getUsagePrompt(): string {
+  return [
+    "Send a location when you want a live earthquake check, like `Tokyo`, `check Los Angeles`, or `35.6762, 139.6503`.",
+    "Ask `which locations are vulnerable now` for active USGS risk areas.",
+    "Ask for `latest advisories` or `more info` when you want Exa web context too.",
+  ].join("\n");
+}
+
+function isCasualMessage(text: string): boolean {
+  const normalized = normalizeText(text);
+  return /^(hi|hello|hey|yo|sup|good morning|good afternoon|good evening|thanks|thank you|ok|okay|cool|nice)$/.test(
+    normalized,
+  );
+}
+
+function shouldRunLocationCheck(text: string): boolean {
+  if (parseCoordinates(text) !== null) {
+    return true;
+  }
+
+  if (isCasualMessage(text)) {
+    return false;
+  }
+
+  if (extractDeclaredLocation(text) !== null) {
+    return true;
+  }
+
+  const normalized = normalizeText(text);
+  if (
+    /^(please )?(can you |could you )?(check|scan|assess|look up|tell me about)\b/.test(
+      normalized,
+    ) ||
+    /\b(earthquake|quake|risk|safe|safety|danger|dangerous)\b.*\b(in|at|near|around)\b/.test(normalized)
+  ) {
+    return true;
+  }
+
+  return isLikelyBareLocation(text);
+}
+
+function shouldUseExaContext(text: string): boolean {
+  const normalized = normalizeText(text);
+  return /\b(more info|more information|latest|news|advisory|advisories|official update|updates|reports?|sources?|search|web|details)\b/.test(
+    normalized,
+  );
 }
 
 function isActiveHazardRequest(text: string): boolean {
@@ -408,10 +463,19 @@ function extractLocationQuery(text: string): string {
     return text;
   }
 
+  const declaredLocation = extractDeclaredLocation(text);
+  if (declaredLocation !== null) {
+    return declaredLocation;
+  }
+
+  return cleanLocationQuery(text);
+}
+
+function extractDeclaredLocation(text: string): string | null {
   const directPatterns = [
     /^(?:i\s*(?:am|'m)|im|am|we\s*(?:are|'re)|we're)\s+(?:currently\s+)?(?:in|at|near|around)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
     /^(?:my\s+location\s+is|location\s*:?)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
-    /^(?:check|scan|assess|look\s+up|tell\s+me\s+about)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
+    /^(?:please\s+)?(?:(?:can|could)\s+you\s+)?(?:check|scan|assess|look\s+up|tell\s+me\s+about)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
   ];
 
   for (const pattern of directPatterns) {
@@ -427,7 +491,7 @@ function extractLocationQuery(text: string): string {
     return cleanLocationQuery(trailingLocation);
   }
 
-  return cleanLocationQuery(text);
+  return null;
 }
 
 function cleanLocationQuery(text: string): string {
@@ -436,6 +500,24 @@ function cleanLocationQuery(text: string): string {
     .replace(/\b(?:right\s+now|now|rn|currently)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isLikelyBareLocation(text: string): boolean {
+  const cleaned = cleanLocationQuery(text);
+  if (!cleaned || cleaned.length > 80 || /[?]/.test(cleaned)) {
+    return false;
+  }
+
+  const normalized = normalizeText(cleaned);
+  if (
+    /^(what|why|how|who|when|where|which|can|could|would|should|do|does|did|is|are|am|i|you|please|latest|news|advisory|advisories|more|info|information|reports?|sources?|search|web|details)\b/.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+
+  return /^[\p{L}\p{M}][\p{L}\p{M}\s.',-]*$/u.test(cleaned);
 }
 
 function normalizeText(text: string): string {
@@ -577,6 +659,7 @@ async function summarizeActiveHazards(
   scopeLabel: string,
   filterEvents: (event: EarthquakeEvent) => boolean = () => true,
   note?: string,
+  includeWebContext = false,
 ): Promise<string> {
   const { events, generatedUtc } = await fetchRecentEarthquakes();
   const scopedEvents = events.filter(filterEvents);
@@ -606,9 +689,11 @@ async function summarizeActiveHazards(
   lines.push("Send a city or coordinates for a personal radius check.");
   lines.push(`Source: USGS past-day feed generated ${generatedUtc}`);
 
-  const exaContext = await searchExaContext(buildExaHazardQuery(scopeLabel, notableEvents));
-  if (exaContext) {
-    lines.push(exaContext);
+  if (includeWebContext) {
+    const exaContext = await searchExaContext(buildExaHazardQuery(scopeLabel, notableEvents));
+    if (exaContext) {
+      lines.push(exaContext);
+    }
   }
 
   return lines.join("\n");
@@ -762,8 +847,12 @@ function guidanceForTier(tier: RiskTier): string {
   return "No nearby live USGS activity crossed the selected radius threshold.";
 }
 
-async function summarizeAssessment(assessment: RiskAssessment): Promise<string> {
+async function summarizeAssessment(assessment: RiskAssessment, includeWebContext: boolean): Promise<string> {
   const deterministic = formatAssessment(assessment);
+  if (!includeWebContext) {
+    return deterministic;
+  }
+
   return appendExaContext(deterministic, assessment);
 }
 
