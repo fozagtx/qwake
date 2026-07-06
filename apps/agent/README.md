@@ -19,8 +19,8 @@ Optional:
 
 Telegram is implemented through `@spectrum-ts/telegram`. Set `TELEGRAM_BOT_TOKEN` in Railway to enable it; leave it unset for iMessage only.
 
-The runtime base URL is in code: `https://openrouter.ai/api/v1` (OpenAI-compatible gateway).
-The default model is `openai/gpt-oss-120b:free`; override it with `BTL_MODEL` if you want a different OpenRouter model slug.
+The runtime base URL is in code: `https://api.badtheorylabs.com/v1`.
+The default model is `deepseek-v4-flash`; override it with `BTL_MODEL` if you want a different provider model.
 Exa Search is required for live web context around earthquake advisories and reports. USGS still remains the source of earthquake events and risk tiers.
 
 ## Run
