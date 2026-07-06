@@ -13,21 +13,16 @@ export function requireExaSearchConfig(): string {
 }
 
 export async function searchExaContext(query: string): Promise<string | null> {
-  const apiKey = requireExaSearchConfig();
+  requireExaSearchConfig();
 
   try {
-    const exa = new Exa(apiKey);
+    const exa = new Exa();
     const response = await exa.search(query, {
       type: "auto",
       numResults: EXA_RESULT_LIMIT,
       startPublishedDate: startPublishedDate(),
       contents: {
-        highlights: {
-          query,
-          maxCharacters: 220,
-        },
-        livecrawl: "fallback",
-        maxAgeHours: 6,
+        highlights: true,
       },
     });
 
@@ -46,7 +41,13 @@ export async function searchExaContext(query: string): Promise<string | null> {
 
     return ["Exa live web context:", ...results].join("\n");
   } catch (error) {
-    return `Exa live web context unavailable: ${formatSearchError(error)}`;
+    console.error(
+      JSON.stringify({
+        event: "qwake.agent.exa_error",
+        error: formatSearchError(error),
+      }),
+    );
+    return "Exa live web context is unavailable right now.";
   }
 }
 
