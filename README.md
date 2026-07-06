@@ -2,6 +2,8 @@
 
 Map live USGS earthquakes from the past 24 hours and check whether a typed location is near recent reported activity.
 
+<img width="540" height="1143" alt="PHOTO-2026-07-06-15-51-42" src="https://github.com/user-attachments/assets/8f0c49f6-bc6f-4156-8d14-465af9a9bf8a" />
+
 ## Architecture
 
 ```mermaid
