@@ -17,7 +17,7 @@ Optional:
 - `TELEGRAM_BOT_TOKEN`
 - `BTL_MODEL`
 
-Telegram is implemented through `@spectrum-ts/telegram`. Set `TELEGRAM_BOT_TOKEN` in Render to enable it; leave it unset for iMessage only.
+Telegram is implemented through `@spectrum-ts/telegram`. Set `TELEGRAM_BOT_TOKEN` in Railway to enable it; leave it unset for iMessage only.
 
 The BTL Runtime base URL is in code: `https://api.badtheorylabs.com/v1`.
 The default model is `deepseek-v4-flash`, which was verified successfully through BTL Runtime.
@@ -31,9 +31,9 @@ bun run check:btl
 bun start
 ```
 
-## Render
+## Railway
 
-Deploy this service as a Render background worker from the root Blueprint file `render.yaml`. Render builds `apps/agent/Dockerfile`, which uses Bun inside Docker.
+Deploy this service from Railway with root directory `apps/agent`. Railway uses `apps/agent/railway.toml` and builds `apps/agent/Dockerfile`, which runs Bun inside Docker.
 
 ## Data policy
 

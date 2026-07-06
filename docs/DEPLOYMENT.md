@@ -3,7 +3,7 @@
 Qwake uses two different deployment platforms:
 
 - Streamlit Community Cloud for the dashboard.
-- Render for the Spectrum messaging agent.
+- Railway for the Spectrum messaging agent.
 
 ## Streamlit Dashboard
 
@@ -34,32 +34,30 @@ pip install -r requirements.txt
 streamlit run earthquake-app.py
 ```
 
-## Render Messaging Agent
+## Railway Messaging Agent
 
-Platform: Render.
+Platform: Railway.
 
-Render service settings:
+Railway service settings:
 
-- Blueprint file: `render.yaml`
-- Service type: background worker
-- Runtime: Docker
-- Docker context: `apps/agent`
+- Root directory: `apps/agent`
+- Config file: `apps/agent/railway.toml`
 - Dockerfile: `apps/agent/Dockerfile`
-- Container command: `bun start`
+- Start command: `bun start`
 
-Required Render environment variables:
+Required Railway environment variables:
 
 - `PROJECT_ID`
 - `PROJECT_SECRET`
 - `BTL_API_KEY`
 
-Telegram Render environment variable:
+Telegram Railway environment variable:
 
 - `TELEGRAM_BOT_TOKEN`
 
 `TELEGRAM_BOT_TOKEN` is the Telegram BotFather token. The agent registers the Telegram provider only when this value is present. If it is missing, the service runs iMessage only.
 
-Optional Render environment variables:
+Optional Railway environment variables:
 
 - `BTL_MODEL=deepseek-v4-flash`
 
@@ -69,7 +67,7 @@ The BTL Runtime base URL is not a secret and is hardcoded in `apps/agent/src/run
 https://api.badtheorylabs.com/v1
 ```
 
-Render local verification:
+Railway local verification:
 
 ```sh
 cd apps/agent
@@ -82,9 +80,9 @@ bun start
 ## Telegram Checklist
 
 1. Create a Telegram bot with BotFather.
-2. Add `TELEGRAM_BOT_TOKEN` to the Render agent service.
-3. Deploy the Render Blueprint from `render.yaml`.
-4. Confirm Render logs show the Spectrum agent started without missing-env errors.
+2. Add `TELEGRAM_BOT_TOKEN` to the Railway agent service.
+3. Deploy the Railway service from root directory `apps/agent`.
+4. Confirm Railway logs show the Spectrum agent started without missing-env errors.
 
 ## No-Fallback Data Rule
 

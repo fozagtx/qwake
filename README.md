@@ -26,8 +26,8 @@ bun start
 
 The agent uses Spectrum for iMessage and optional Telegram, plus BTL Runtime response wording through an OpenAI-compatible gateway.
 
-Render agent deployment uses the root `render.yaml`. Telegram uses `TELEGRAM_BOT_TOKEN`; if that variable is missing, the agent starts with iMessage only.
+Railway agent deployment uses `apps/agent/railway.toml`. Telegram uses `TELEGRAM_BOT_TOKEN`; if that variable is missing, the agent starts with iMessage only.
 
-See `docs/DEPLOYMENT.md` for exact Streamlit Cloud and Render setup.
+See `docs/DEPLOYMENT.md` for exact Streamlit Cloud and Railway setup.
 
 Video Tutorial: https://youtu.be/JL9xOs-G1hI
