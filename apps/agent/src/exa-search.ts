@@ -2,6 +2,9 @@ import Exa from "exa-js";
 
 const EXA_RESULT_LIMIT = 3;
 const EXA_SEARCH_WINDOW_DAYS = 3;
+const EXA_SNIPPET_LIMIT = 220;
+const EXA_TITLE_LIMIT = 90;
+const EXA_URL_LIMIT = 140;
 
 export function requireExaSearchConfig(): string {
   const apiKey = process.env.EXA_API_KEY;
@@ -29,10 +32,11 @@ export async function searchExaContext(query: string): Promise<string | null> {
     const results = response.results
       .slice(0, EXA_RESULT_LIMIT)
       .map((result, index) => {
-        const title = result.title?.trim() || "Untitled source";
+        const title = truncateText(result.title?.trim() || "Untitled source", EXA_TITLE_LIMIT);
         const date = result.publishedDate ? ` (${result.publishedDate.slice(0, 10)})` : "";
-        const highlight = cleanSnippet(result.highlights?.[0]);
-        return `${index + 1}. ${title}${date} - ${result.url}${highlight ? `\n   ${highlight}` : ""}`;
+        const url = truncateText(result.url, EXA_URL_LIMIT);
+        const highlight = truncateText(cleanSnippet(result.highlights?.[0]), EXA_SNIPPET_LIMIT);
+        return `${index + 1}. ${title}${date} - ${url}${highlight ? `\n   ${highlight}` : ""}`;
       });
 
     if (results.length === 0) {
@@ -62,6 +66,14 @@ function cleanSnippet(snippet: string | undefined): string {
   }
 
   return snippet.replace(/\s+/g, " ").trim();
+}
+
+function truncateText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
 function formatSearchError(error: unknown): string {

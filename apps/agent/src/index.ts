@@ -9,6 +9,7 @@ const USGS_PAST_DAY_URL =
 const USER_AGENT = "qwake-earthquake-agent/1.0";
 const DEFAULT_RADIUS_KM = 300;
 const ACTIVE_HAZARD_LIMIT = 5;
+const MAX_OUTBOUND_MESSAGE_CHARS = 3200;
 const UNITED_STATES_ALIASES = new Set(["america", "the usa", "united states", "united states of america", "us", "usa"]);
 const UNITED_STATES_PLACE_TERMS = [
   "alabama",
@@ -134,6 +135,10 @@ type RiskAssessment = {
 
 type RankedEarthquakeEvent = EarthquakeEvent & { riskTier: RiskTier };
 
+type TextSendSpace = {
+  send: (content: string) => Promise<unknown>;
+};
+
 const configuredProviders: PlatformProviderConfig[] = [imessage.config()];
 const btlRuntimeConfig = requireBtlRuntimeConfig();
 requireExaSearchConfig();
@@ -189,13 +194,17 @@ for await (const [space, message] of app.messages) {
   );
 
   if (message.content.type !== "text") {
-    await space.send("Send a place name or coordinates, and I will check live USGS earthquakes from the past 24 hours.");
+    const chunkCount = await sendTextResponse(
+      space,
+      "Send a place name or coordinates, and I will check live USGS earthquakes from the past 24 hours.",
+    );
     console.info(
       JSON.stringify({
         event: "qwake.agent.reply_sent",
         platform,
         contentType: "help",
         spaceId: maskedSpaceId,
+        chunkCount,
       }),
     );
     continue;
@@ -203,13 +212,14 @@ for await (const [space, message] of app.messages) {
 
   try {
     const response = await handleTextMessage(message.content.text);
-    await space.send(response);
+    const chunkCount = await sendTextResponse(space, response);
     console.info(
       JSON.stringify({
         event: "qwake.agent.reply_sent",
         platform,
         contentType: "risk_assessment",
         spaceId: maskedSpaceId,
+        chunkCount,
       }),
     );
   } catch (error) {
@@ -221,7 +231,7 @@ for await (const [space, message] of app.messages) {
         error: formatError(error),
       }),
     );
-    await space.send(formatError(error));
+    await sendTextResponse(space, formatUserFacingError(error));
   }
 }
 
@@ -248,6 +258,98 @@ function maskIdentifier(value: string): string {
   }
 
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+async function sendTextResponse(space: TextSendSpace, text: string): Promise<number> {
+  const chunks = splitOutboundMessage(text);
+  for (const chunk of chunks) {
+    await space.send(chunk);
+  }
+
+  return chunks.length;
+}
+
+function splitOutboundMessage(text: string): string[] {
+  const normalized = text.trim() || "No live response text was generated.";
+  if (normalized.length <= MAX_OUTBOUND_MESSAGE_CHARS) {
+    return [normalized];
+  }
+
+  const chunks: string[] = [];
+  let current = "";
+  for (const block of normalized.split(/\n{2,}/)) {
+    const cleanBlock = block.trim();
+    if (!cleanBlock) {
+      continue;
+    }
+
+    const candidate = current ? `${current}\n\n${cleanBlock}` : cleanBlock;
+    if (candidate.length <= MAX_OUTBOUND_MESSAGE_CHARS) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+
+    for (const splitBlock of splitLongText(cleanBlock, MAX_OUTBOUND_MESSAGE_CHARS)) {
+      if (!current) {
+        current = splitBlock;
+        continue;
+      }
+
+      const splitCandidate = `${current}\n\n${splitBlock}`;
+      if (splitCandidate.length <= MAX_OUTBOUND_MESSAGE_CHARS) {
+        current = splitCandidate;
+      } else {
+        chunks.push(current);
+        current = splitBlock;
+      }
+    }
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
+function splitLongText(text: string, maxLength: number): string[] {
+  if (text.length <= maxLength) {
+    return [text];
+  }
+
+  const chunks: string[] = [];
+  let current = "";
+  for (const word of text.split(/\s+/)) {
+    if (word.length > maxLength) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+      }
+      for (let index = 0; index < word.length; index += maxLength) {
+        chunks.push(word.slice(index, index + maxLength));
+      }
+      continue;
+    }
+
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= maxLength) {
+      current = candidate;
+    } else {
+      chunks.push(current);
+      current = word;
+    }
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks;
 }
 
 async function handleTextMessage(text: string): Promise<string> {
@@ -729,4 +831,20 @@ function formatError(error: unknown): string {
     return `Live check unavailable: ${error.message}`;
   }
   return "Live check unavailable due to an unknown error.";
+}
+
+function formatUserFacingError(error: unknown): string {
+  if (isMessageTooLongError(error)) {
+    return "The live check finished, but the chat platform rejected the reply length. I have shortened future replies; try the request again.";
+  }
+
+  return formatError(error);
+}
+
+function isMessageTooLongError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return /message is too long/i.test(error.message);
 }
