@@ -20,7 +20,7 @@ Optional:
 Telegram is implemented through `@spectrum-ts/telegram`. Set `TELEGRAM_BOT_TOKEN` in Railway to enable it; leave it unset for iMessage only.
 
 The BTL Runtime base URL is in code: `https://api.badtheorylabs.com/v1`.
-The BTL Runtime model is in code: `deepseek-v4-flash`.
+The BTL Runtime model is in code: `gpt-oss-120b`.
 Exa Search is required for live web context around earthquake advisories and reports. USGS still remains the source of earthquake events and risk tiers.
 
 ## Run

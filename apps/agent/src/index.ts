@@ -2,7 +2,12 @@ import { Spectrum, type PlatformProviderConfig } from "spectrum-ts";
 import { imessage } from "@spectrum-ts/imessage";
 import { telegram } from "@spectrum-ts/telegram";
 import { requireExaSearchConfig, searchExaContext } from "./exa-search";
-import { requireBtlRuntimeConfig } from "./runtime";
+import {
+  composeBtlAgentReply,
+  planBtlAgentTurn,
+  requireBtlRuntimeConfig,
+  type QwakeAgentPlan,
+} from "./runtime";
 
 const USGS_PAST_DAY_URL =
   "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson";
@@ -362,41 +367,133 @@ async function handleTextMessage(text: string): Promise<string> {
     return "Alerts are not enabled in this build yet. No subscription was created.";
   }
 
-  if (isCasualMessage(trimmed)) {
-    return getUsagePrompt();
+  const plan = await planAgentTurn(trimmed);
+  console.info(
+    JSON.stringify({
+      event: "qwake.agent.plan",
+      intent: plan.intent,
+      scope: plan.scope,
+      includeWebContext: plan.includeWebContext,
+      hasLocationQuery: Boolean(plan.locationQuery),
+    }),
+  );
+
+  if (plan.intent === "chat" || plan.intent === "unsupported") {
+    return plan.reply ?? getUsagePrompt();
   }
 
-  const includeWebContext = shouldUseExaContext(trimmed);
-
-  if (isActiveHazardRequest(trimmed)) {
-    return summarizeActiveHazards("globally", undefined, undefined, includeWebContext);
+  if (plan.intent === "active_hazards") {
+    const toolResult =
+      plan.scope === "united_states"
+        ? await summarizeActiveHazards(
+            "in the United States",
+            isLikelyUnitedStatesEvent,
+            "United States is too broad for a precise safety radius. Send a city, state, or coordinates for a personal check.",
+            plan.includeWebContext,
+          )
+        : await summarizeActiveHazards("globally", undefined, undefined, plan.includeWebContext);
+    return composeAgentReply({ userText: trimmed, intent: plan.intent, toolResult });
   }
 
-  if (!shouldRunLocationCheck(trimmed)) {
-    return getUsagePrompt();
+  if (plan.locationQuery === null) {
+    return plan.reply ?? getUsagePrompt();
   }
 
-  const locationQuery = extractLocationQuery(trimmed);
-  if (isUnitedStatesQuery(locationQuery)) {
-    return summarizeActiveHazards(
+  if (isUnitedStatesQuery(plan.locationQuery)) {
+    const toolResult = await summarizeActiveHazards(
       "in the United States",
       isLikelyUnitedStatesEvent,
       "United States is too broad for a precise safety radius. Send a city, state, or coordinates for a personal check.",
-      includeWebContext,
+      plan.includeWebContext,
     );
+    return composeAgentReply({ userText: trimmed, intent: "active_hazards", toolResult });
   }
 
-  const location = await resolveLocation(locationQuery);
+  const location = await resolveLocation(plan.locationQuery);
   const assessment = await assessLocationRisk(location, DEFAULT_RADIUS_KM);
-  return summarizeAssessment(assessment, includeWebContext);
+  const toolResult = await summarizeAssessment(assessment, plan.includeWebContext);
+  return composeAgentReply({ userText: trimmed, intent: plan.intent, toolResult });
 }
 
 function getUsagePrompt(): string {
   return [
-    "Send a location when you want a live earthquake check, like `Tokyo`, `check Los Angeles`, or `35.6762, 139.6503`.",
-    "Ask `which locations are vulnerable now` for active USGS risk areas.",
-    "Ask for `latest advisories` or `more info` when you want Exa web context too.",
+    "Hi, I can help with live earthquake safety.",
+    "Where are you right now?",
+    "You can ask for nearby safety, places affected today, or latest advisories.",
   ].join("\n");
+}
+
+async function planAgentTurn(text: string): Promise<QwakeAgentPlan> {
+  try {
+    return await planBtlAgentTurn(text);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "qwake.agent.btl_plan_error",
+        error: formatError(error),
+      }),
+    );
+    return planFallbackAgentTurn(text);
+  }
+}
+
+async function composeAgentReply(input: {
+  userText: string;
+  intent: QwakeAgentPlan["intent"];
+  toolResult: string;
+}): Promise<string> {
+  try {
+    return await composeBtlAgentReply(input);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "qwake.agent.btl_compose_error",
+        error: formatError(error),
+      }),
+    );
+    return input.toolResult;
+  }
+}
+
+function planFallbackAgentTurn(text: string): QwakeAgentPlan {
+  const includeWebContext = shouldUseExaContext(text);
+  if (isCasualMessage(text)) {
+    return {
+      intent: "chat",
+      locationQuery: null,
+      scope: "global",
+      includeWebContext: false,
+      reply: "Hey. Where are you right now, and what do you want to know about earthquakes: nearby safety, affected places today, or latest advisories?",
+    };
+  }
+
+  if (isActiveHazardRequest(text)) {
+    return {
+      intent: "active_hazards",
+      locationQuery: null,
+      scope: "global",
+      includeWebContext,
+      reply: null,
+    };
+  }
+
+  if (shouldRunLocationCheck(text)) {
+    return {
+      intent: "location_check",
+      locationQuery: extractLocationQuery(text),
+      scope: "global",
+      includeWebContext,
+      reply: null,
+    };
+  }
+
+  return {
+    intent: "chat",
+    locationQuery: null,
+    scope: "global",
+    includeWebContext: false,
+    reply: "I can help with earthquake safety. Where are you, and do you want nearby risk, places affected today, or latest advisories?",
+  };
 }
 
 function isCasualMessage(text: string): boolean {
@@ -474,6 +571,7 @@ function extractLocationQuery(text: string): string {
 function extractDeclaredLocation(text: string): string | null {
   const directPatterns = [
     /^(?:i\s*(?:am|'m)|im|am|we\s*(?:are|'re)|we're)\s+(?:currently\s+)?(?:in|at|near|around)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
+    /^(?:i\s+)?live\s+(?:in\s+)?(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
     /^(?:my\s+location\s+is|location\s*:?)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
     /^(?:please\s+)?(?:(?:can|could)\s+you\s+)?(?:check|scan|assess|look\s+up|tell\s+me\s+about)\s+(.+?)\s*(?:right\s+now|now|rn|currently)?[.!?]*$/i,
   ];
@@ -926,6 +1024,12 @@ function formatUserFacingError(error: unknown): string {
   if (isMessageTooLongError(error)) {
     return "The live check finished, but the chat platform rejected the reply length. I have shortened future replies; try the request again.";
   }
+  if (isBtlBillingError(error)) {
+    return "BTL Runtime is unavailable because the workspace has insufficient model credits. I cannot run the agent brain until credits or a connected provider key are fixed.";
+  }
+  if (isBtlBusyError(error)) {
+    return "BTL Runtime is busy right now. Try again in a moment.";
+  }
 
   return formatError(error);
 }
@@ -936,4 +1040,30 @@ function isMessageTooLongError(error: unknown): boolean {
   }
 
   return /message is too long/i.test(error.message);
+}
+
+function isBtlBillingError(error: unknown): boolean {
+  return readErrorStatus(error) === 402 || /insufficient (balance|credits)/i.test(readErrorMessage(error));
+}
+
+function isBtlBusyError(error: unknown): boolean {
+  const status = readErrorStatus(error);
+  return status === 429 || (status !== undefined && status >= 500);
+}
+
+function readErrorStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const status = (error as Record<string, unknown>).status;
+  return typeof status === "number" ? status : undefined;
+}
+
+function readErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "";
 }
